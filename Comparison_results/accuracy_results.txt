@@ -1,0 +1,10 @@
+optimal_file_data_00_00_00.csv: Model 1 Accuracy: 46.43%, Model 2 Accuracy: 56.25%
+optimal_file_data_00_00_20.csv: Model 1 Accuracy: 47.22%, Model 2 Accuracy: 55.56%
+optimal_file_data_00_00_40.csv: Model 1 Accuracy: 55.14%, Model 2 Accuracy: 53.27%
+optimal_file_data_00_01_00.csv: Model 1 Accuracy: 46.23%, Model 2 Accuracy: 44.34%
+optimal_file_data_00_01_20.csv: Model 1 Accuracy: 35.85%, Model 2 Accuracy: 43.40%
+optimal_file_data_00_01_40.csv: Model 1 Accuracy: 46.73%, Model 2 Accuracy: 44.86%
+optimal_file_data_00_02_00.csv: Model 1 Accuracy: 49.54%, Model 2 Accuracy: 48.62%
+optimal_file_data_00_02_20.csv: Model 1 Accuracy: 47.66%, Model 2 Accuracy: 44.86%
+optimal_file_data_00_02_40.csv: Model 1 Accuracy: 50.89%, Model 2 Accuracy: 42.86%
+optimal_file_data_00_03_00.csv: Model 1 Accuracy: 43.12%, Model 2 Accuracy: 48.62%

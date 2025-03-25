@@ -2,40 +2,45 @@ import os
 import ast
 import numpy as np
 import pandas as pd
+import pickle
 from scipy.spatial import KDTree
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
 import torch
-from torch_geometric.data import DataLoader
-
+from tensorflow.keras.models import load_model
 
 # Constants
 NUM_GATEWAYS = 54
 NEIGHBOR_COUNT = 4
-STAGE1_MODEL_PATH = 'stage_1_visible_model.h5'
 
-# Load Stage 1 model
-from tensorflow.keras.models import load_model
+# Load trained Stage 1 model and its scaler
+STAGE1_MODEL_PATH = 'stage_1_model.h5'
+STAGE1_SCALER_PATH = 'stage_1_scaler.pkl'
 stage1_model = load_model(STAGE1_MODEL_PATH)
-scaler = StandardScaler()
+with open(STAGE1_SCALER_PATH, 'rb') as f:
+    stage1_scaler = pickle.load(f)
 
+# Load Stage 2 scaler (for GNN input features)
+STAGE2_SCALER_PATH = 'stage_2_scaler.pkl'
+with open(STAGE2_SCALER_PATH, 'rb') as f:
+    stage2_scaler = pickle.load(f)
 
+# === Helper Functions ===
 def parse_matrix(matrix_str):
     try:
         return np.array(ast.literal_eval(str(matrix_str)), dtype=np.float32)
     except Exception:
         return np.zeros(NUM_GATEWAYS, dtype=np.float32)
 
-
 def get_top3_prediction_binary(model, X):
-    preds = model.predict(X, verbose=0)
+    X_scaled = stage1_scaler.transform(X)
+    preds = model.predict(X_scaled, verbose=0)
     top3_idx = np.argsort(preds, axis=1)[:, -3:]
     binary_preds = np.zeros_like(preds)
     for i, idx in enumerate(top3_idx):
         binary_preds[i, idx] = 1
     return binary_preds
-
 
 def prepare_input_for_gnn(data, top3_gateway_predictions):
     updated_x = data.x.clone()
@@ -46,7 +51,6 @@ def prepare_input_for_gnn(data, top3_gateway_predictions):
             expanded_predictions[i, gateway_idx] = 1
     updated_x[:, -NUM_GATEWAYS:] = expanded_predictions
     return Data(x=updated_x, edge_index=data.edge_index)
-
 
 def build_graph_from_file(file_path):
     df = pd.read_csv(file_path, usecols=[
@@ -76,8 +80,7 @@ def build_graph_from_file(file_path):
     satellite_features = np.hstack([positions, visible_gw, stage1_preds])
     node_features = np.hstack([satellite_features, neighbor_gateway_vector])
 
-    scaler.partial_fit(node_features)
-    node_features = scaler.transform(node_features)
+    node_features = stage2_scaler.transform(node_features)
 
     labels = np.argmax(np.vstack(df['optimal_gateway_matrix'].values), axis=1)
     labels = torch.tensor(labels, dtype=torch.long)
@@ -94,7 +97,6 @@ def build_graph_from_file(file_path):
         edge_index=edge_index,
         y=labels
     )
-
 
 class SatelliteDataset(Dataset):
     def __init__(self, file_list):

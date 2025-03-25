@@ -1,5 +1,29 @@
 import matplotlib.pyplot as plt
 
+import torch
+from torch_geometric.data import Data
+
+
+
+NUM_GATEWAYS = 54  # or import this from dataloader if defined there
+
+def prepare_input_for_gnn(data, top3_gateway_predictions):
+    updated_x = data.x.clone()
+    expanded_predictions = torch.zeros(updated_x.size(0), NUM_GATEWAYS, dtype=torch.float)
+    top3_gateway_predictions = top3_gateway_predictions.long()
+
+    for i in range(updated_x.size(0)):
+        for gateway_idx in top3_gateway_predictions[i]:
+            expanded_predictions[i, gateway_idx] = 1
+
+    updated_x[:, -NUM_GATEWAYS:] = expanded_predictions
+    return Data(x=updated_x, edge_index=data.edge_index)
+
+
+def top_k_accuracy(preds, labels, k):
+    topk = torch.topk(preds, k, dim=1).indices
+    return (topk == labels.unsqueeze(1)).any(dim=1).float().mean().item()
+
 
 def plot_metrics(train_losses, val_losses,
                  train_top1_acc, train_top3_acc, train_top5_acc,

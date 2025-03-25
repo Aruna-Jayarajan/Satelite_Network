@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from loss import total_loss_fn, get_binary_predictions, top_k_accuracy
 from dataloader import prepare_input_for_gnn, NUM_GATEWAYS
+import torch.nn.functional as F
+
 
 def train_model_with_mse(
     gnn_model,
@@ -69,8 +71,7 @@ def train_model_with_mse(
         with torch.no_grad():
             for data in val_loader:
                 input_features = data.x[:, :57].cpu().numpy()
-                input_scaled = scaler.transform(input_features)
-                preds_model1 = stage1_model.predict(input_scaled, verbose=0)
+                preds_model1 = stage1_model.predict(input_features, verbose=0)
 
                 top3_model1 = np.argsort(preds_model1, axis=1)[:, -3:]
                 binary_preds_model1 = np.zeros_like(preds_model1)

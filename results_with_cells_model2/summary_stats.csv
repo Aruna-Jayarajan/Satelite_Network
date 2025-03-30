@@ -1,0 +1,4 @@
+File Name,Rows,Columns,Unique Satellites,Unique Gateways,Unique Cells,Assigned Cells,Unassigned Cells,Used Gateways,Unused Gateways
+file_data_00_00_00.csv,4569,12,112,54,4569,4545,24,47,7
+file_data_00_01_20.csv,4569,12,106,54,4569,4367,202,45,9
+file_data_00_33_00.csv,4569,12,110,54,4569,4378,191,45,9

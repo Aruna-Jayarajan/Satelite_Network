@@ -82,10 +82,16 @@ def build_graph_from_file(file_path):
     node_features = np.hstack([satellite_features, neighbor_gateway_vector])
 
     node_features = stage2_scaler.transform(node_features)
-
+    
     labels = np.argmax(np.vstack(df['optimal_gateway_matrix'].values), axis=1)
     labels = torch.tensor(labels, dtype=torch.long)
+    '''
+    
+    # Use raw optimal_gateway_matrix as multi-label targets
+    labels = np.vstack(df['optimal_gateway_matrix'].values).astype(np.float32)
+    labels = torch.tensor(labels, dtype=torch.float)
 
+'''
     edges = []
     for idx, pos in enumerate(positions):
         _, neighbors = kdtree.query(pos, k=NEIGHBOR_COUNT + 1)

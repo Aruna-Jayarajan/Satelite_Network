@@ -1,0 +1,2 @@
+actual_gateways_used,predicted_gateways_used,missing_gateways,missing_gateways_pct,extra_predicted_gateways,actual_cells,predicted_cells,missing_cells,missing_cells_pct,extra_predicted_cells
+54,53,1,1.8518518518518516,0,4569,4569,0,0.0,0

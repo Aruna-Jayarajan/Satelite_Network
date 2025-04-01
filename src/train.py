@@ -48,15 +48,17 @@ def train_model_with_mse(
                 gnn_input_data = prepare_input_for_gnn(data, top3_gnn_round)
 
             # Loss calculation
-            total_loss_value, _, _ = total_loss_fn(preds_gnn_round, data.y, lambda_global, label_smoothing)
+           # Loss calculation
+            class_labels = data.y.argmax(dim=1)  # convert from one-hot to class indices
+            total_loss_value, _, _ = total_loss_fn(preds_gnn_round, class_labels, lambda_global, label_smoothing)
             total_loss_value.backward()
             optimizer_gnn.step()
 
             # Metrics
-            total_loss += total_loss_value.item()
-            total_top1 += top_k_accuracy(preds_gnn_round, data.y, k=1)
-            total_top3 += top_k_accuracy(preds_gnn_round, data.y, k=3)
-            total_top5 += top_k_accuracy(preds_gnn_round, data.y, k=5)
+            total_top1 += top_k_accuracy(preds_gnn_round, class_labels, k=1)
+            total_top3 += top_k_accuracy(preds_gnn_round, class_labels, k=3)
+            total_top5 += top_k_accuracy(preds_gnn_round, class_labels, k=5)
+
             total_train_samples += 1
 
         # Training results for epoch
@@ -81,11 +83,12 @@ def train_model_with_mse(
                 gnn_input_data = prepare_input_for_gnn(data, torch.tensor(binary_preds_model1, dtype=torch.float))
                 preds_gnn = gnn_model(gnn_input_data.x, gnn_input_data.edge_index)
 
-                loss_val, _, _ = total_loss_fn(preds_gnn, data.y, lambda_global, label_smoothing)
-                val_loss += loss_val.item()
-                val_top1 += top_k_accuracy(preds_gnn, data.y, k=1)
-                val_top3 += top_k_accuracy(preds_gnn, data.y, k=3)
-                val_top5 += top_k_accuracy(preds_gnn, data.y, k=5)
+                class_labels = data.y.argmax(dim=1)
+                loss_val, _, _ = total_loss_fn(preds_gnn, class_labels, lambda_global, label_smoothing)
+                val_top1 += top_k_accuracy(preds_gnn, class_labels, k=1)
+                val_top3 += top_k_accuracy(preds_gnn, class_labels, k=3)
+                val_top5 += top_k_accuracy(preds_gnn, class_labels, k=5)
+
                 total_val_samples += 1
 
         # Validation results for epoch

@@ -1,156 +1,86 @@
 import os
-import ast
-import numpy as np
 import pandas as pd
-import pickle
-from scipy.spatial import KDTree
-from sklearn.preprocessing import StandardScaler
-from torch.utils.data import Dataset
-from torch_geometric.data import Data
-import torch
-from tensorflow.keras.models import load_model
-from math import radians, cos, sin, sqrt, atan2
+from geopy.distance import geodesic
 
-# Constants
-NUM_GATEWAYS = 54
-NEIGHBOR_COUNT = 4
-CELL_VISIBILITY_RADIUS_KM = 1200  # Adjustable based on satellite altitude and FoV
+def load_static_cell_coords(cell_file):
+    df = pd.read_csv(cell_file)
+    df.columns = df.columns.str.lower()
+    return df.set_index('cell_id')[['latitude', 'longitude']].to_dict(orient='index')
 
-# === Paths ===
-GATEWAY_CSV_PATH = r"C:\Users\aruna\Desktop\MS Thesis\Real Data\df_gw.csv"
-CELL_CSV_PATH = r"C:\Users\aruna\Desktop\MS Thesis\Real Data\cells_with_gateways.csv"
-STAGE1_MODEL_PATH = 'stage_1_model.h5'
-STAGE1_SCALER_PATH = 'stage_1_scaler.pkl'
-STAGE2_SCALER_PATH = 'stage_2_scaler.pkl'
+def load_all_data(snapshot_folder, cell_file, gateway_file, snapshot_filename=None, debug_columns=False):
+    cell_coord_lookup = load_static_cell_coords(cell_file)
+    gateways = load_gateways(gateway_file)
 
-# === Static Data ===
-gateway_df = pd.read_csv(GATEWAY_CSV_PATH)
-GATEWAY_POSITIONS = {
-    int(row['gw_id']): [row['latitude'], row['longitude']]
-    for _, row in gateway_df.iterrows()
-}
+    if snapshot_filename:
+        file_path = os.path.join(snapshot_folder, snapshot_filename)
+    else:
+        selected_file = select_file_from_folder(snapshot_folder)
+        file_path = os.path.join(snapshot_folder, selected_file)
 
-cell_df = pd.read_csv(CELL_CSV_PATH)
-CELL_POSITIONS = {
-    int(row['idx']): [row['lat'], row['lng']]
-    for _, row in cell_df.iterrows()
-}
-CELL_GATEWAY_MAP = {
-    int(row['idx']): [int(row['closest_gw_id']), int(row['second_closest_gw_id'])]
-    for _, row in cell_df.iterrows()
-}
+    satellites, cells = load_satellite_snapshot(file_path, gateways, cell_coord_lookup, debug_columns)
+    return satellites, gateways, cells
 
-# === Load Models ===
-stage1_model = load_model(STAGE1_MODEL_PATH)
-with open(STAGE1_SCALER_PATH, 'rb') as f:
-    stage1_scaler = pickle.load(f)
+def load_gateways(gateway_file):
+    df = pd.read_csv(gateway_file)
+    df.columns = df.columns.str.lower()
+    gateways = [
+        {'id': int(row['gw_id']), 'latitude': row['latitude'], 'longitude': row['longitude']}
+        for _, row in df.iterrows()
+    ]
+    return gateways
 
-with open(STAGE2_SCALER_PATH, 'rb') as f:
-    stage2_scaler = pickle.load(f)
+def select_file_from_folder(folder_path):
+    files = sorted([f for f in os.listdir(folder_path) if f.endswith(".csv")])
+    if not files:
+        raise FileNotFoundError(f"No CSV files found in {folder_path}")
+    return files[0]
 
-# === Helper Functions ===
-def parse_matrix(matrix_str):
-    try:
-        return np.array(ast.literal_eval(str(matrix_str)), dtype=np.float32)
-    except Exception:
-        return np.zeros(NUM_GATEWAYS, dtype=np.float32)
+def load_satellite_snapshot(file_path, gateways, cell_coord_lookup, debug_columns=False):
+    df = pd.read_csv(file_path)
+    df.columns = df.columns.str.lower()
 
-def get_top3_prediction_binary(model, X):
-    X_scaled = stage1_scaler.transform(X)
-    preds = model.predict(X_scaled, verbose=0)
-    top3_idx = np.argsort(preds, axis=1)[:, -3:]
-    binary_preds = np.zeros_like(preds)
-    for i, idx in enumerate(top3_idx):
-        binary_preds[i, idx] = 1
-    return binary_preds
+    if debug_columns:
+        print(f"\nColumns in snapshot file '{os.path.basename(file_path)}':")
+        print(df.columns.tolist())
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
-    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
+    # Optional renaming for older naming conventions
+    if 'feed_sat' in df.columns:
+        df.rename(columns={'feed_sat': 'sat_id'}, inplace=True)
 
-def count_visible_cells(sat_lat, sat_lon, radius_km=CELL_VISIBILITY_RADIUS_KM):
-    count = 0
-    for cell_lat, cell_lon in CELL_POSITIONS.values():
-        dist = haversine_distance(sat_lat, sat_lon, cell_lat, cell_lon)
-        if dist <= radius_km:
-            count += 1
-    return count
+    # === Load cell data ===
+    cell_demand_df = df[['cell_id', 'demand']].groupby('cell_id').mean().reset_index()
+    cells = []
+    for row in cell_demand_df.itertuples(index=False):
+        if row.cell_id in cell_coord_lookup:
+            coords = cell_coord_lookup[row.cell_id]
+            cells.append({
+                'cell_id': row.cell_id,
+                'latitude': coords['latitude'],
+                'longitude': coords['longitude'],
+                'demand': row.demand
+            })
 
-def build_graph_from_file(file_path):
-    df = pd.read_csv(file_path, usecols=[
-        'feed_sat', 'Latitude', 'Longitude', 'Altitude',
-        'visible_gateway_matrix', 'optimal_gateway_matrix'
-    ])
-    if df.empty:
-        return None
+    # === Load satellite data ===
+    sats_df = df[['sat_id', 'latitude', 'longitude', 'altitude']].drop_duplicates()
 
-    df['visible_gateway_matrix'] = df['visible_gateway_matrix'].apply(parse_matrix)
-    df['optimal_gateway_matrix'] = df['optimal_gateway_matrix'].apply(parse_matrix)
+    satellites = []
+    for row in sats_df.itertuples(index=False):
+        sat_coord = (row.latitude, row.longitude)
 
-    positions = df[['Latitude', 'Longitude', 'Altitude']].values
-    visible_gw = np.vstack(df['visible_gateway_matrix'].values)
-    stage1_input = np.hstack([positions, visible_gw])
-    stage1_preds = get_top3_prediction_binary(stage1_model, stage1_input)
+        # Dynamically compute visible gateways within 1000 km
+        visible_gateways = []
+        for gw in gateways:
+            gw_coord = (gw['latitude'], gw['longitude'])
+            distance_km = geodesic(sat_coord, gw_coord).km
+            visible_gateways.append(1 if distance_km <= 1200 else 0)
 
-    # Neighbor-aware gateway influence
-    kdtree = KDTree(positions)
-    neighbor_gateway_vector = []
-    for idx, pos in enumerate(positions):
-        _, neighbors = kdtree.query(pos, k=NEIGHBOR_COUNT + 1)
-        neighbor_top3 = stage1_preds[neighbors[1:]]
-        combined_gateways = (neighbor_top3.sum(axis=0) > 0).astype(np.float32)
-        neighbor_gateway_vector.append(combined_gateways)
-    neighbor_gateway_vector = np.array(neighbor_gateway_vector)
+        satellites.append({
+            'sat_id': int(row.sat_id),
+            'latitude': row.latitude,
+            'longitude': row.longitude,
+            'altitude': row.altitude,
+            'visible_gateways': visible_gateways,
+            'optimal_gateway': []  # Optional: clear this out unless used later
+        })
 
-    # === Cell visibility summary ===
-    visible_cell_counts = []
-    for lat, lon, _ in positions:
-        cell_count = count_visible_cells(lat, lon)
-        visible_cell_counts.append([cell_count])
-    visible_cell_counts = np.array(visible_cell_counts)
-
-    # === Feature Construction ===
-    satellite_features = np.hstack([
-        positions,
-        visible_gw,
-        stage1_preds,
-        neighbor_gateway_vector,
-        visible_cell_counts  # new cell count feature
-    ])
-    node_features = stage2_scaler.transform(satellite_features)
-
-    # === Labels ===
-    labels = np.vstack(df['optimal_gateway_matrix'].values).astype(np.float32)
-    labels = torch.tensor(labels, dtype=torch.float)
-
-    # === Edges (from KDTree) ===
-    edges = []
-    for idx, pos in enumerate(positions):
-        _, neighbors = kdtree.query(pos, k=NEIGHBOR_COUNT + 1)
-        for neighbor_idx in neighbors[1:]:
-            edges.append([idx, neighbor_idx])
-    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-
-    return Data(
-        x=torch.tensor(node_features, dtype=torch.float),
-        edge_index=edge_index,
-        y=labels
-    )
-
-# === Dataset Class ===
-class SatelliteDataset(Dataset):
-    def __init__(self, file_list):
-        self.file_list = file_list
-
-    def __len__(self):
-        return len(self.file_list)
-
-    def __getitem__(self, idx):
-        file_path = self.file_list[idx]
-        graph = build_graph_from_file(file_path)
-        if graph is None:
-            raise ValueError(f"Error processing file: {file_path}")
-        return graph
+    return satellites, cells

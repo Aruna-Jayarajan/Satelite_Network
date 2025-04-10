@@ -1,85 +1,99 @@
+# src/train.py
+
 import torch
-from tqdm import tqdm
-from loss import total_loss
-from utils import multilabel_accuracy, top_k_accuracy
+import torch.nn as nn
+import torch.optim as optim
+from src.loss import compute_custom_loss
+import matplotlib.pyplot as plt
 
-def train(model, data_loader, optimizer, device, epoch, scheduler=None, lambda_dict=None):
-    """
-    Training loop for one epoch using custom total_loss.
 
-    Args:
-        model: GNN model
-        data_loader: PyTorch DataLoader yielding PyG Data objects
-        optimizer: optimizer
-        device: 'cuda' or 'cpu'
-        epoch: current epoch (for display)
-        scheduler: optional LR scheduler
-        lambda_dict: dictionary of lambda weights for each loss component
-    """
-    model.train()
-    total_epoch_loss, total_acc, total_topk = 0, 0, 0
+def train(model, dataset, cells_per_snapshot, device, epochs=5, inner_steps=5, lr=1e-3,
+          cell_gateway_file=r"C:\Users\aruna\Desktop\MS Thesis\Real Data\cells_with_gateways.csv"):
+    
+    model.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    # Unpack or set default lambda weights
-    lambda_dict = lambda_dict or {
-        'lambda_coverage': 1.0,
-        'lambda_fairness': 1.0,
-        'lambda_balance': 1.0,
-        'lambda_switch': 1.0,
-        'lambda_overlap': 1.0
-    }
+    train_losses = []
+    train_coverage = []
+    train_fairness = []
+    train_gateway_loss = []
+    train_spatial_loss = []
 
-    for data in tqdm(data_loader, desc=f"[Epoch {epoch}]"):
-        data = data.to(device)
-        optimizer.zero_grad()
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        total_cov = 0.0
+        total_fair = 0.0
+        total_gw = 0.0
+        total_spatial = 0.0
 
-        # === Forward ===
-        pred_gateway_logits = model(data.x, data.edge_index)
+        for i, graph in enumerate(dataset):
+            graph = graph.to(device)
+            cells = cells_per_snapshot[i]  # Pass the corresponding cell list for this graph
 
-        # === Placeholder Metrics (You should extract these from data or memory) ===
-        # Replace with real tracking when you integrate full cell assignment logic
-        cell_coverage_matrix = torch.ones(1, device=device)                    # dummy
-        sat_gateway_counts = pred_gateway_logits.argmax(dim=1).bincount(minlength=pred_gateway_logits.size(1)).float()
-        sat_cell_counts = torch.ones_like(sat_gateway_counts)                 # dummy
-        gateway_cell_distribution = torch.ones(pred_gateway_logits.size(1), pred_gateway_logits.size(0))  # dummy
+            for step in range(inner_steps):
+                x_dict = graph.x_dict
+                edge_index_dict = graph.edge_index_dict
+                edge_label_index = graph['satellite', 'serves', 'cell'].edge_index
+                gw_labels = graph['satellite'].y
 
-        current_gateways = (pred_gateway_logits > 0).float()                  # thresholded logits
-        prev_gateways = current_gateways.clone().detach()                    # replace with real buffer
-        current_cells = torch.ones(pred_gateway_logits.size(0), 100).to(device)  # dummy: 100 cells
-        prev_cells = current_cells.clone().detach()                          # replace with real buffer
+                # Forward pass
+                edge_logits, gw_logits = model(x_dict, edge_index_dict, edge_label_index)
 
-        cell_assignments = {i: set() for i in range(pred_gateway_logits.size(0))}  # dummy
-        neighbor_assignments = {i: [] for i in range(pred_gateway_logits.size(0))} # dummy
-        gateway_ids = [list(range(pred_gateway_logits.size(1))) for _ in range(pred_gateway_logits.size(0))]  # dummy
+                # Compute custom loss
+                loss, metrics = compute_custom_loss(
+                    gw_logits=gw_logits,
+                    edge_logits=edge_logits,
+                    edge_index=edge_label_index,
+                    x_dict=x_dict,
+                    cells=cells,
+                    cell_gateway_file=cell_gateway_file,
+                    gw_labels=gw_labels  # optional
+                )
 
-        # === Compute Total Loss ===
-        loss = total_loss(
-            pred_gateway_logits,
-            cell_coverage_matrix,
-            sat_gateway_counts,
-            sat_cell_counts,
-            gateway_cell_distribution,
-            current_gateways,
-            prev_gateways,
-            current_cells,
-            prev_cells,
-            cell_assignments,
-            neighbor_assignments,
-            gateway_ids,
-            **lambda_dict
-        )
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-        # === Backprop ===
-        loss.backward()
-        optimizer.step()
+                # Logging
+                total_loss += loss.item()
+                total_cov += metrics["cell_coverage_loss"]
+                total_fair += metrics["demand_balance_loss"]
+                total_gw += metrics["gateway_coverage_loss"]
+                total_spatial += metrics["spatial_loss"]
 
-        # === Metrics ===
-        total_epoch_loss += loss.item()
-        total_acc += multilabel_accuracy(pred_gateway_logits, data.y)
-        total_topk += top_k_accuracy(pred_gateway_logits, data.y, k=3)
+        train_losses.append(total_loss)
+        train_coverage.append(total_cov)
+        train_fairness.append(total_fair)
+        train_gateway_loss.append(total_gw)
+        train_spatial_loss.append(total_spatial)
 
-    if scheduler:
-        scheduler.step()
+        print(f"Epoch {epoch+1} | Total Loss: {total_loss:.4f} | "
+              f"Coverage: {total_cov:.4f} | "
+              f"Fairness: {total_fair:.4f} | "
+              f"Gateway: {total_gw:.4f} | "
+              f"Spatial: {total_spatial:.4f}")
 
-    n = len(data_loader)
-    print(f"[Epoch {epoch}] Loss: {total_epoch_loss/n:.4f} | Acc: {total_acc/n:.4f} | Top-3 Acc: {total_topk/n:.4f}")
-    return total_epoch_loss / n, total_acc / n, total_topk / n
+    # === Plotting ===
+    epochs_range = range(1, epochs + 1)
+    plt.figure(figsize=(12, 6))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs_range, train_losses, label='Total Loss')
+    plt.plot(epochs_range, train_gateway_loss, label='Gateway Loss')
+    plt.plot(epochs_range, train_spatial_loss, label='Spatial Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Losses')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs_range, train_coverage, label='Coverage Loss')
+    plt.plot(epochs_range, train_fairness, label='Fairness (Demand) Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss Value')
+    plt.title('Coverage & Fairness Loss')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
